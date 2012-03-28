@@ -32,13 +32,29 @@ struct config_info
   const char *encoding_profile;
 };
 
+#ifndef CODEC_TYPE_AUDIO
+#define CODEC_TYPE_AUDIO AVMEDIA_TYPE_AUDIO
+#endif
+#ifndef CODEC_TYPE_VIDEO
+#define CODEC_TYPE_VIDEO AVMEDIA_TYPE_VIDEO
+#endif
+#ifndef PKT_FLAG_KEY
+#define PKT_FLAG_KEY AV_PKT_FLAG_KEY
+#endif
+
+#define IS_VERSION_OVER(name, major, minor) (LIB##name##_VERSION_MAJOR > major || (LIB##name##_VERSION_MAJOR == major && LIB##name##_VERSION_MINOR >= minor))
+
 static AVStream *add_output_stream(AVFormatContext *output_format_context, AVStream *input_stream) 
 {
   AVCodecContext *input_codec_context;
   AVCodecContext *output_codec_context;
   AVStream *output_stream;
 
+#if IS_VERSION_OVER(AVFORMAT, 53, 10)
+  output_stream = avformat_new_stream(output_format_context, 0);
+#else
   output_stream = av_new_stream(output_format_context, 0);
+#endif
   if (!output_stream) 
   {
     fprintf(stderr, "Segmenter error: Could not allocate stream\n");
@@ -146,20 +162,28 @@ int main(int argc, char **argv)
   }
 
   AVFormatContext *input_context = NULL;
+#if IS_VERSION_OVER(AVFORMAT, 53, 2)
+  int ret = avformat_open_input(&input_context, config.input_filename, input_format, NULL);
+#else
   int ret = av_open_input_file(&input_context, config.input_filename, input_format, 0, NULL);
+#endif
   if (ret != 0) 
   {
     fprintf(stderr, "Segmenter error: Could not open input file, make sure it is an mpegts file: %d\n", ret);
     exit(1);
   }
 
+#if IS_VERSION_OVER(AVFORMAT, 53, 6)
+  if (avformat_find_stream_info(input_context, NULL) < 0)
+#else
   if (av_find_stream_info(input_context) < 0) 
+#endif
   {
     fprintf(stderr, "Segmenter error: Could not read stream information\n");
     exit(1);
   }
 
-#if LIBAVFORMAT_VERSION_MAJOR >= 52 && LIBAVFORMAT_VERSION_MINOR >= 45
+#if IS_VERSION_OVER(AVFORMAT, 52, 45)
   AVOutputFormat *output_format = av_guess_format("mpegts", NULL, NULL);
 #else
   AVOutputFormat *output_format = guess_format("mpegts", NULL, NULL);
@@ -205,13 +229,20 @@ int main(int argc, char **argv)
     }
   }
 
+#if IS_VERSION_OVER(AVFORMAT, 53, 2)
+#else
   if (av_set_parameters(output_context, NULL) < 0) 
   {
     fprintf(stderr, "Segmenter error: Invalid output format parameters\n");
     exit(1);
   }
+#endif
 
+#if IS_VERSION_OVER(AVFORMAT, 52, 101)
+  av_dump_format(output_context, 0, config.filename_prefix, 1);
+#else
   dump_format(output_context, 0, config.filename_prefix, 1);
+#endif
 
   if(video_index >= 0)
   {
@@ -221,7 +252,12 @@ int main(int argc, char **argv)
       fprintf(stderr, "Segmenter error: Could not find video decoder, key frames will not be honored\n");
     }
 
+#if IS_VERSION_OVER(AVCODEC, 53, 6)
+  av_dump_format(output_context, 0, config.filename_prefix, 1);
+    if (avcodec_open2(video_stream->codec, codec, NULL) < 0)
+#else
     if (avcodec_open(video_stream->codec, codec) < 0) 
+#endif
     {
       fprintf(stderr, "Segmenter error: Could not open video decoder, key frames will not be honored\n");
     }
@@ -229,13 +265,21 @@ int main(int argc, char **argv)
 
   unsigned int output_index = 1;
   snprintf(output_filename, strlen(config.temp_directory) + 1 + strlen(config.filename_prefix) + 10, "%s/%s-%05u.ts", config.temp_directory, config.filename_prefix, output_index++);
+#if IS_VERSION_OVER(AVFORMAT, 52, 105)
+  if (avio_open(&output_context->pb, output_filename, AVIO_FLAG_WRITE) < 0)
+#else
   if (url_fopen(&output_context->pb, output_filename, URL_WRONLY) < 0) 
+#endif
   {
     fprintf(stderr, "Segmenter error: Could not open '%s'\n", output_filename);
     exit(1);
   }
 
+#if IS_VERSION_OVER(AVFORMAT, 53, 2)
+  if (avformat_write_header(output_context, NULL))
+#else
   if (av_write_header(output_context)) 
+#endif
   {
     fprintf(stderr, "Segmenter error: Could not write mpegts header to first output file\n");
     exit(1);
@@ -280,13 +324,25 @@ int main(int argc, char **argv)
     // done writing the current file?
     if (segment_time - prev_segment_time >= config.segment_length) 
     {
+#if IS_VERSION_OVER(AVFORMAT, 52, 105)
+      avio_flush(output_context->pb);
+#else
       put_flush_packet(output_context->pb);
+#endif
+#if IS_VERSION_OVER(AVFORMAT, 52, 105)
+      avio_close(output_context->pb);
+#else
       url_fclose(output_context->pb);
+#endif
 
       output_transfer_command(first_segment, ++last_segment, 0, config.encoding_profile);
 
       snprintf(output_filename, strlen(config.temp_directory) + 1 + strlen(config.filename_prefix) + 10, "%s/%s-%05u.ts", config.temp_directory, config.filename_prefix, output_index++);
+#if IS_VERSION_OVER(AVFORMAT, 52, 105)
+      if (avio_open(&output_context->pb, output_filename, AVIO_FLAG_WRITE) < 0)
+#else
       if (url_fopen(&output_context->pb, output_filename, URL_WRONLY) < 0) 
+#endif
       {
         fprintf(stderr, "Segmenter error: Could not open '%s'\n", output_filename);
         break;
@@ -323,7 +379,11 @@ int main(int argc, char **argv)
     av_freep(&output_context->streams[i]);
   }
 
+#if IS_VERSION_OVER(AVFORMAT, 52, 105)
+  avio_close(output_context->pb);
+#else
   url_fclose(output_context->pb);
+#endif
   av_free(output_context);
 
   output_transfer_command(first_segment, ++last_segment, 1, config.encoding_profile);
